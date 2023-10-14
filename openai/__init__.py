@@ -42,6 +42,7 @@ from openai.httpx_utils import (
     force_init_pulls,
     force_init_sync_pulls,
     force_init_async_pulls,
+    reset_sessions,
 )
 
 if TYPE_CHECKING:
@@ -111,4 +112,5 @@ __all__ = [
     "force_init_pulls",
     "force_init_sync_pulls",
     "force_init_async_pulls",
+    "reset_sessions",
 ]

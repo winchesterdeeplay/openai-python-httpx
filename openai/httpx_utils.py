@@ -62,5 +62,10 @@ async def force_init_async_pulls() -> None:
     logging.info(f"HTTP pools initialized for Sync session")
 
 
-
-
+def reset_sessions() -> None:
+    """
+    Reset sync and async sessions to default values.
+    """
+    openai.sync_session = openai.init_session(sync=True)
+    openai.async_session = openai.init_session(sync=False)
+    logging.info(f"HTTP pools reset to default values")

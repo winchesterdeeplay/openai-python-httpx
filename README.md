@@ -14,11 +14,10 @@ Be careful, it will replace original openai package in your environment.
 
 ## Example of usage:
 
-### Force initialization of HTTP connection pools for create methods
+### Force HTTP connection pools initialization for openai create methods
 ```python
 import openai
 openai.api_key = "sk-..."
-openai.api_base = "https://api.openai.com"
 
 openai.force_init_sync_pulls()
 
@@ -29,11 +28,10 @@ openai.force_init_sync_pulls()
 response = openai.Completion.create(...)
 ```
 
-### HTTPX with HTTP2 support
+### Setup HTTP2 support for openai create methods
 ```python
 import openai
 openai.api_key = "sk-..."
-openai.api_base = "https://api.openai.com"
 
 openai.setup_custom_sync_session(http2=True)
 
@@ -43,3 +41,37 @@ response = openai.Completion.create(...)
 ```
 
 [More examples](examples/httpx)
+
+
+### Measurements
+
+```python
+import time
+import openai
+openai.api_key = "sk-..."
+
+without_pulls_delay, with_pulls_delay = [], []
+
+for _ in range(10):
+    start = time.time()
+    openai.ChatCompletion.create(
+        model="gpt-3.5-turbo", messages=[{"role": "user", "content": "Test message. Ignore it."}], temperature=0.0,
+    )
+    without_pulls_delay.append(time.time() - start)
+    openai.reset_sessions()
+
+for _ in range(10):
+    openai.force_init_sync_pulls()
+    start = time.time()
+    openai.ChatCompletion.create(
+        model="gpt-3.5-turbo", messages=[{"role": "user", "content": "Test message. Ignore it."}], temperature=0.0,
+    )
+    with_pulls_delay.append(time.time() - start)
+    openai.reset_sessions()
+
+print(f"Average time without pulls: {sum(without_pulls_delay) / len(without_pulls_delay)}")
+print(f"Average time with pulls: {sum(with_pulls_delay) / len(with_pulls_delay)}")
+
+# Average time without pulls: 1.2538371324539184
+# Average time with pulls: 0.9621359586715699
+```
