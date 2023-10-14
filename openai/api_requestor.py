@@ -5,7 +5,7 @@ import sys
 import time
 import warnings
 from json import JSONDecodeError
-from typing import AsyncGenerator, Callable, Dict, Iterator, Optional, Tuple, Union, overload, Generator, Coroutine
+from typing import AsyncGenerator, Callable, Dict, Iterator, Optional, Tuple, Union, overload, Generator, Coroutine, Any
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
 import httpx
@@ -49,20 +49,6 @@ def _requests_proxies_arg(proxy) -> Optional[Dict[str, str]]:
         )
 
 
-def _aiohttp_proxies_arg(proxy) -> Optional[str]:
-    """Returns a value suitable for the 'proxies' argument to 'aiohttp.ClientSession.request."""
-    if proxy is None:
-        return None
-    elif isinstance(proxy, str):
-        return proxy
-    elif isinstance(proxy, dict):
-        return proxy["https"] if "https" in proxy else proxy["http"]
-    else:
-        raise ValueError(
-            "'openai.proxy' must be specified as either a string URL or a dict with string URL under the https and/or http keys."
-        )
-
-
 def init_session(sync: bool = True) -> Union[httpx.Client, httpx.AsyncClient]:
     if not openai.verify_ssl_certs:
         warnings.warn("verify_ssl_certs is ignored; openai always verifies.")
@@ -78,36 +64,6 @@ def init_session(sync: bool = True) -> Union[httpx.Client, httpx.AsyncClient]:
     if sync:
         return httpx.Client(**client_config)
     return httpx.AsyncClient(**client_config)
-
-
-def parse_stream_helper(line: bytes) -> Optional[str]:
-    if line and line.startswith(b"data:"):
-        if line.startswith(b"data: "):
-            # SSE event may be valid when it contain whitespace
-            line = line[len(b"data: ") :]
-        else:
-            line = line[len(b"data:") :]
-        if line.strip() == b"[DONE]":
-            # return here will cause GeneratorExit exception in urllib3
-            # and it will close http connection with TCP Reset
-            return None
-        else:
-            return line.decode("utf-8")
-    return None
-
-
-def parse_stream(rbody: Iterator[bytes]) -> Iterator[str]:
-    for line in rbody:
-        _line = parse_stream_helper(line)
-        if _line is not None:
-            yield _line
-
-
-async def parse_stream_async(rbody: httpx.AsyncByteStream) -> None:
-    async for line in rbody:
-        _line = parse_stream_helper(line)
-        if _line is not None:
-            yield _line
 
 
 class APIRequestor:
@@ -333,33 +289,51 @@ class APIRequestor:
         request_id: Optional[str] = None,
         request_timeout: Optional[Union[float, Tuple[float, float]]] = None,
     ) -> Tuple[Union[OpenAIResponse, AsyncGenerator[OpenAIResponse, None]], bool, str]:
-        result = None
+        resp = None
         try:
             result = await self.arequest_raw(
                 method.lower(),
                 url,
                 self.async_session,
+                stream=stream,
                 params=params,
                 supplied_headers=headers,
                 files=files,
                 request_id=request_id,
                 request_timeout=request_timeout,
             )
-            resp, got_stream = self._interpret_response(result, stream)
+            if not stream:
+                resp, got_stream = self._interpret_response(result, stream)
+            else:
+                got_stream = True
+
         except Exception:
             # Close the request before exiting session context.
             raise
         if got_stream:
 
             async def wrap_resp():
-                assert isinstance(resp, AsyncGenerator)
                 try:
-                    async for r in resp:
-                        yield r
+                    yield_response = []
+                    async for text in result.aiter_bytes():
+                        text = text.decode("utf-8")
+                        for t in text.split("\n\n"):
+                            t = t.strip()
+                            if t.startswith("data:"):
+                                t = t.split("data:")[1].strip()
+                            if not t or t == "[DONE]":
+                                continue
+                            yield_response.append(t)
+                            try:
+                                yield json.loads("".join(yield_response))
+                                yield_response = []
+                            except json.JSONDecodeError:
+                                pass
+                                # waiting full chunk
                 finally:
                     # Close the request before exiting session context. Important to do it here
                     # as if stream is not fully exhausted, we need to close the request nevertheless.
-                    pass
+                    await result.aclose()
 
             return wrap_resp(), got_stream, self.api_key
         else:
@@ -532,12 +506,10 @@ class APIRequestor:
         abs_url, headers, data = self._prepare_request_raw(url, supplied_headers, method, params, files, request_id)
 
         try:
-            sync_method: Callable = self.session_stream if stream else self.sync_session.request
+            sync_method: Callable = self.session_stream_sync if stream else self.sync_session.request
 
             if files:
-                data, content_type = requests.models.RequestEncodingMixin._encode_files(  # type: ignore
-                    files, data
-                )
+                data, content_type = requests.models.RequestEncodingMixin._encode_files(files, data)  # type: ignore
                 headers["Content-Type"] = content_type
 
             result = sync_method(
@@ -578,6 +550,7 @@ class APIRequestor:
         params=None,
         supplied_headers: Optional[Dict[str, str]] = None,
         files=None,
+        stream: bool = False,
         request_id: Optional[str] = None,
         request_timeout: Optional[Union[float, Tuple[float, float]]] = None,
     ) -> httpx.Response:
@@ -586,9 +559,7 @@ class APIRequestor:
         timeout = request_timeout if request_timeout else TIMEOUT_SECS
 
         if files:
-            data, content_type = requests.models.RequestEncodingMixin._encode_files(
-                files, data
-            )
+            data, content_type = requests.models.RequestEncodingMixin._encode_files(files, data)
             headers["Content-Type"] = content_type
 
         request_kwargs = {
@@ -602,7 +573,8 @@ class APIRequestor:
         }
 
         try:
-            result = await session.request(**request_kwargs)
+            async_method: Callable = self.session_stream_async if stream else self.async_session.request
+            result = await async_method(**request_kwargs)
             result.raise_for_status()  # This will raise an exception for HTTP errors.
             util.log_info(
                 "OpenAI API response",
@@ -620,18 +592,16 @@ class APIRequestor:
         except httpx.RequestError as e:
             raise error.APIConnectionError("Error communicating with OpenAI") from e
 
-    from typing import Any
-
     def _interpret_response(
         self, result: Union[httpx.Response, Any], stream: bool
     ) -> Tuple[Union[OpenAIResponse, Iterator[OpenAIResponse]], bool]:
         """Returns the response(s) and a bool indicating whether it is a stream."""
         if stream:
             res = []
-            text = result.read().decode('utf-8')
+            text = result.read().decode("utf-8")
             for t in text.split("\n\n"):
-                final_t = t.split("data:")[1]
-                if final_t == " [DONE]":
+                final_t = t.split("data:")[1].strip()
+                if final_t == "[DONE]":
                     break
                 res.append(
                     self._interpret_response_line(
@@ -681,18 +651,22 @@ class APIRequestor:
             raise self.handle_error_response(rbody, rcode, resp.data, rheaders, stream_error=stream_error)
         return resp
 
-    def session_stream(
-        self,
-        *args,
-        sync: bool = True,
-        **kwargs,
-    ) -> Union[httpx.Response, Coroutine[Any, Any, httpx.Response]]:
-        session = self.sync_session if sync else self.async_session
-        request = session.build_request(*args, **kwargs)
-        response = session.send(
+    def session_stream_sync(self, *args, **kwargs) -> Union[httpx.Response, Coroutine[Any, Any, httpx.Response]]:
+        request = self.sync_session.build_request(*args, **kwargs)
+        response = self.sync_session.send(
             request=request,
-            auth=session.auth,
-            follow_redirects=session.follow_redirects,
+            auth=self.sync_session.auth,
+            follow_redirects=self.sync_session.follow_redirects,
+            stream=True,
+        )
+        return response
+
+    async def session_stream_async(self, *args, **kwargs):
+        request = self.async_session.build_request(*args, **kwargs)
+        response = await self.async_session.send(
+            request=request,
+            auth=self.async_session.auth,
+            follow_redirects=self.async_session.follow_redirects,
             stream=True,
         )
         return response
