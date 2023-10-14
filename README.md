@@ -75,3 +75,5 @@ print(f"Average time with pulls: {sum(with_pulls_delay) / len(with_pulls_delay)}
 # Average time without pulls: 1.2538371324539184
 # Average time with pulls: 0.9621359586715699
 ```
+
+[Comparison with openai](https://colab.research.google.com/drive/1zds0HIqBZeVcvJDv0Gj2bzKyx3mX0d3M?usp=sharing)
