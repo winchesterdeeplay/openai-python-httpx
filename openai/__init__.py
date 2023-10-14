@@ -4,15 +4,15 @@
 
 import os
 import sys
-from typing import TYPE_CHECKING, Optional, Union, Callable
+from typing import TYPE_CHECKING, Optional
 
-from contextvars import ContextVar
+import httpx
 
 if "pkg_resources" not in sys.modules:
     # workaround for the following:
     # https://github.com/benoitc/gunicorn/pull/2539
     sys.modules["pkg_resources"] = object()  # type: ignore[assignment]
-    import aiohttp
+    import httpx
 
     del sys.modules["pkg_resources"]
 
@@ -35,10 +35,17 @@ from openai.api_resources import (
 )
 from openai.error import APIError, InvalidRequestError, OpenAIError
 from openai.version import VERSION
+from openai.api_requestor import init_session
+from openai.httpx_utils import (
+    setup_custom_sync_session,
+    setup_custom_async_session,
+    force_init_pulls,
+    force_init_sync_pulls,
+    force_init_async_pulls,
+)
 
 if TYPE_CHECKING:
-    import requests
-    from aiohttp import ClientSession
+    import httpx
 
 api_key = os.environ.get("OPENAI_API_KEY")
 # Path of a file with an API key, whose contents can change. Supercedes
@@ -61,14 +68,8 @@ ca_bundle_path = None  # No longer used, feature was removed
 debug = False
 log = None  # Set to either 'debug' or 'info', controls console logging
 
-requestssession: Optional[
-    Union["requests.Session", Callable[[], "requests.Session"]]
-] = None # Provide a requests.Session or Session factory.
-
-aiosession: ContextVar[Optional["ClientSession"]] = ContextVar(
-    "aiohttp-session", default=None
-)  # Acts as a global aiohttp ClientSession that reuses connections.
-# This is user-supplied; otherwise, a session is remade for each request.
+sync_session: httpx.Client = init_session(sync=True)
+async_session: httpx.AsyncClient = init_session(sync=False)
 
 __version__ = VERSION
 __all__ = [
@@ -103,4 +104,11 @@ __all__ = [
     "organization",
     "proxy",
     "verify_ssl_certs",
+    "sync_session",
+    "async_session",
+    "setup_custom_sync_session",
+    "setup_custom_async_session",
+    "force_init_pulls",
+    "force_init_sync_pulls",
+    "force_init_async_pulls",
 ]

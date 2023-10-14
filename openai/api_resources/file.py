@@ -1,7 +1,7 @@
 import json
 import os
-from typing import cast
 import time
+from typing import cast
 
 import openai
 from openai import api_requestor, util, error

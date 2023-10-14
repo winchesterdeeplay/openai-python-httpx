@@ -2,7 +2,7 @@ import io
 import json
 
 import pytest
-from aiohttp import ClientSession
+from httpx import AsyncClient
 
 import openai
 from openai import error
@@ -68,8 +68,8 @@ async def test_timeout_does_not_error():
 
 
 async def test_completions_stream_finishes_global_session():
-    async with ClientSession() as session:
-        openai.aiosession.set(session)
+    async with AsyncClient() as session:
+        openai.httpxsession.set(session)
 
         # A query that should be fast
         parts = []
